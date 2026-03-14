@@ -30,6 +30,11 @@ class Config:
         "INTERNAL_KEYWORDS", "project,status,team,our,internal,sprint,deploy,release"
     ).split(","))
 
+    # WhatsApp Business Cloud API
+    whatsapp_phone_number_id: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+    whatsapp_access_token: str = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
+    whatsapp_verify_token: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
+
     # Formatting
     max_message_length: int = int(os.getenv("MAX_MESSAGE_LENGTH", "600"))
 
