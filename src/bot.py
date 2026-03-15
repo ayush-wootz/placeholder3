@@ -59,7 +59,8 @@ Previous conversation context:
 
 {data_block}
 
-Answer the user's question using ONLY the data above. Cite whether data is internal or external.
+If data is provided above, answer using that data and cite whether it is internal or external.
+If no data is provided, answer from your own knowledge — keep it concise and helpful.
 """
 
 
@@ -102,7 +103,10 @@ class Bot:
         if self.config.openai_api_key:
             response = await self._llm_synthesize(user_query, data_block, context)
         else:
-            response = data_block or "No relevant data found."
+            response = data_block if data_block != "No relevant data found." else (
+                "I couldn't find specific data for that. Try asking about a project or topic — "
+                "e.g. 'What's the status of Prakriti?'"
+            )
 
         # Enforce personality & length
         response = enforce_personality(response, self.config)
@@ -195,7 +199,9 @@ class Bot:
                 return resp.json()["choices"][0]["message"]["content"].strip()
         except Exception:
             logger.exception("LLM call failed, falling back to formatted results")
-            return data_block or "No relevant data found."
+            if data_block and data_block != "No relevant data found.":
+                return data_block
+            return "Something went wrong. Try again or ask about a specific project."
 
     # ------------------------------------------------------------------
     # Helpers
