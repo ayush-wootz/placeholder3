@@ -8,7 +8,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-GRAPH_API = "https://graph.facebook.com/v21.0"
+GRAPH_API = "https://graph.facebook.com/v25.0"
 
 
 class WhatsAppClient:
