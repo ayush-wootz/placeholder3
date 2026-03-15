@@ -49,6 +49,10 @@ class WhatsAppClient:
                 json=payload,
                 timeout=15,
             )
+            if resp.status_code >= 400:
+                logger.error(
+                    "WhatsApp API %s: %s", resp.status_code, resp.text
+                )
             resp.raise_for_status()
             return resp.json()
 

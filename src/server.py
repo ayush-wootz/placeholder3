@@ -111,7 +111,10 @@ async def receive_message(request: Request):
 
     # Send reply
     if wa_client:
-        await wa_client.send_text(to=sender, body=response)
+        try:
+            await wa_client.send_text(to=sender, body=response)
+        except Exception as e:
+            logger.error("Failed to send reply to %s: %s", sender, e)
 
     return {"status": "ok"}
 
