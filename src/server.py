@@ -11,6 +11,7 @@ from src.bot import Bot
 from src.config import Config
 from src.whatsapp import WhatsAppClient, parse_incoming_message
 from src.tools.search_proprietary import InMemoryBackend
+from src.tools.search_web import WebSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,12 @@ config = Config()
 # -- Wire up the bot -------------------------------------------------------
 # Replace InMemoryBackend with your real backend (Pinecone, Postgres, etc.)
 proprietary_db = InMemoryBackend()
-bot = Bot(proprietary_db=proprietary_db, config=config)
+
+web_search = None
+if config.serper_api_key:
+    web_search = WebSearchTool(api_key=config.serper_api_key, rate_limit=config.web_rate_limit)
+
+bot = Bot(proprietary_db=proprietary_db, web_search=web_search, config=config)
 
 # -- WhatsApp client -------------------------------------------------------
 wa_client: WhatsAppClient | None = None

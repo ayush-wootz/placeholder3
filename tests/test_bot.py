@@ -67,6 +67,40 @@ class TestClassification:
 # Routing tests (Workflows 1, 2, 3)
 # ---------------------------------------------------------------------------
 
+class TestDataBlock:
+    """Test _build_data_block formatting."""
+
+    def test_internal_data_header(self, bot, proprietary_db):
+        from src.tools.search_proprietary import ProprietaryResult
+        results = [ProprietaryResult(content="Test data", source="test/src", relevance_score=0.9)]
+        block = bot._build_data_block(proprietary=results)
+        assert "*Internal data:*" in block
+        assert "Test data" in block
+
+    def test_web_data_header(self, bot):
+        from src.tools.search_web import WebResult
+        results = [WebResult(title="Title", url="http://x.com", snippet="Snippet", source="http://x.com")]
+        block = bot._build_data_block(web=results)
+        assert "*Web results:*" in block
+        assert "Title" in block
+
+    def test_fallback_no_data(self, bot):
+        block = bot._build_data_block()
+        assert block == "No relevant data found."
+
+
+class TestLLMFallback:
+    """Without an OpenAI key, the bot should return formatted data directly."""
+
+    @pytest.mark.asyncio
+    async def test_no_api_key_returns_data_block(self, bot):
+        """Without OPENAI_API_KEY, bot returns raw data block (no LLM call)."""
+        result = await bot.answer("What's the status of Project Falcon?")
+        assert "Falcon" in result or "65%" in result
+        # Verify it's the formatted data, not an LLM response
+        assert "*Internal data:*" in result or "source:" in result
+
+
 class TestRouting:
     @pytest.mark.asyncio
     async def test_workflow1_internal_question(self, bot):
