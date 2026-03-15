@@ -10,7 +10,11 @@ from fastapi.responses import PlainTextResponse
 from src.bot import Bot
 from src.config import Config
 from src.whatsapp import WhatsAppClient, parse_incoming_message
-from src.tools.search_proprietary import InMemoryBackend
+from src.tools.search_proprietary import (
+    InMemoryBackend,
+    PineconeBackend,
+    openai_embed,
+)
 from src.tools.search_web import WebSearchTool
 
 logger = logging.getLogger(__name__)
@@ -18,8 +22,18 @@ logger = logging.getLogger(__name__)
 config = Config()
 
 # -- Wire up the bot -------------------------------------------------------
-# Replace InMemoryBackend with your real backend (Pinecone, Postgres, etc.)
-proprietary_db = InMemoryBackend()
+# Auto-select backend based on which env vars are set
+if config.pinecone_api_key and config.pinecone_index:
+    embed_fn = lambda text: openai_embed(text, api_key=config.openai_api_key)
+    proprietary_db = PineconeBackend(
+        api_key=config.pinecone_api_key,
+        index_name=config.pinecone_index,
+        embed_fn=embed_fn,
+    )
+    logger.info("Using Pinecone backend: index=%s", config.pinecone_index)
+else:
+    proprietary_db = InMemoryBackend()
+    logger.info("Using InMemory backend (no PINECONE env vars set)")
 
 web_search = None
 if config.serper_api_key:

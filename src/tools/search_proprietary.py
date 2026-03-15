@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol
+
+import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,10 +26,29 @@ class ProprietaryBackend(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# OpenAI embeddings helper
+# ---------------------------------------------------------------------------
+async def openai_embed(text: str, api_key: str, model: str = "text-embedding-3-small") -> list[float]:
+    """Get an embedding vector from OpenAI."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/embeddings",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"input": text, "model": model},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()["data"][0]["embedding"]
+
+
+# ---------------------------------------------------------------------------
 # Option A — Pinecone (vector DB)
 # ---------------------------------------------------------------------------
 class PineconeBackend:
-    def __init__(self, api_key: str, index_name: str, environment: str, embed_fn):
+    def __init__(self, api_key: str, index_name: str, embed_fn):
         from pinecone import Pinecone
 
         pc = Pinecone(api_key=api_key)
