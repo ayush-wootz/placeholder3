@@ -10,16 +10,15 @@ class Config:
     bot_name: str = os.getenv("BOT_NAME", "ResearchBot")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
 
-    # Pinecone (Vector DB - Option A)
-    pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
-    pinecone_index: str = os.getenv("PINECONE_INDEX", "")
-    pinecone_environment: str = os.getenv("PINECONE_ENVIRONMENT", "")
-
-    # PostgreSQL (Structured DB - Option B)
+    # ZAI Postgres + pgvector database
     postgres_url: str = os.getenv("POSTGRES_URL", "")
+    tenant_id: str = os.getenv("TENANT_ID", "")
 
-    # Elasticsearch (Document Store - Option C)
-    elasticsearch_url: str = os.getenv("ELASTICSEARCH_URL", "")
+    # Embedding config (must match what ZAI used to ingest)
+    embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "openai_compat")
+    embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_dims: int = int(os.getenv("EMBEDDING_DIMS", "1536"))
 
     # Web search
     serper_api_key: str = os.getenv("SERPER_API_KEY", "")

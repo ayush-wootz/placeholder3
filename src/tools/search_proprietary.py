@@ -1,10 +1,10 @@
-"""Tool 1: search_proprietary — queries the proprietary vector DB."""
+"""Tool 1: search_proprietary — queries the ZAI Postgres + pgvector DB."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Callable
 
 import httpx
 
@@ -26,7 +26,7 @@ class ProprietaryBackend(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# OpenAI embeddings helper
+# Embedding helpers
 # ---------------------------------------------------------------------------
 async def openai_embed(text: str, api_key: str, model: str = "text-embedding-3-small") -> list[float]:
     """Get an embedding vector from OpenAI."""
@@ -44,94 +44,169 @@ async def openai_embed(text: str, api_key: str, model: str = "text-embedding-3-s
         return resp.json()["data"][0]["embedding"]
 
 
-# ---------------------------------------------------------------------------
-# Option A — Pinecone (vector DB)
-# ---------------------------------------------------------------------------
-class PineconeBackend:
-    def __init__(self, api_key: str, index_name: str, embed_fn):
-        from pinecone import Pinecone
-
-        pc = Pinecone(api_key=api_key)
-        self._index = pc.Index(index_name)
-        self._embed = embed_fn  # async (text) -> list[float]
-
-    async def search(self, query: str, top_k: int = 5) -> list[ProprietaryResult]:
-        vector = await self._embed(query)
-        resp = self._index.query(vector=vector, top_k=top_k, include_metadata=True)
-        return [
-            ProprietaryResult(
-                content=m["metadata"].get("content", ""),
-                source=m["metadata"].get("source", "unknown"),
-                relevance_score=m["score"],
-            )
-            for m in resp["matches"]
-        ]
+async def gemini_embed(
+    text: str,
+    api_key: str,
+    model: str = "gemini-embedding-001",
+    dims: int = 1536,
+) -> list[float]:
+    """Get an embedding vector from Gemini."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent?key={api_key}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            url,
+            json={
+                "content": {"parts": [{"text": text}]},
+                "taskType": "RETRIEVAL_QUERY",
+                "outputDimensionality": dims,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()["embedding"]["values"]
 
 
+def _vec_literal(vec: list[float]) -> str:
+    """Convert a float list to pgvector literal format: '[0.1,0.2,...]'"""
+    return "[" + ",".join(f"{v:.8f}" for v in vec) + "]"
+
+
 # ---------------------------------------------------------------------------
-# Option B — PostgreSQL (structured DB, full-text search)
+# ZAI Postgres + pgvector backend
 # ---------------------------------------------------------------------------
-class PostgresBackend:
-    def __init__(self, connection_url: str):
+class ZaiPgvectorBackend:
+    """
+    Searches the ZAI database across all vector tables:
+    - incident_vectors  (checkin incidents)
+    - ccp_vectors       (CCP document chunks)
+    - dashboard_vectors (dashboard updates)
+    - glide_kb_vectors  (Glide knowledge base chunks)
+
+    Uses cosine similarity via pgvector's <=> operator.
+    """
+
+    def __init__(
+        self,
+        connection_url: str,
+        embed_fn: Callable,
+        tenant_id: str = "",
+    ):
         self._url = connection_url
+        self._embed = embed_fn  # async (text) -> list[float]
+        self._tenant_id = tenant_id
 
     async def search(self, query: str, top_k: int = 5) -> list[ProprietaryResult]:
         import asyncpg
 
+        vector = await self._embed(query)
+        vec_lit = _vec_literal(vector)
+
         conn = await asyncpg.connect(self._url)
         try:
+            results: list[ProprietaryResult] = []
+
+            # Search all 4 vector tables, collect top matches from each
+            per_table = max(top_k, 3)
+
+            # 1. Incident vectors
             rows = await conn.fetch(
-                """
-                SELECT content, source, ts_rank(tsv, plainto_tsquery($1)) AS score
-                FROM documents
-                WHERE tsv @@ plainto_tsquery($1)
-                ORDER BY score DESC
+                f"""
+                SELECT summary_text AS content,
+                       'incident/' || checkin_id AS source,
+                       1 - (embedding <=> $1::vector) AS score
+                FROM incident_vectors
+                {"WHERE tenant_id = $3" if self._tenant_id else ""}
+                ORDER BY embedding <=> $1::vector
                 LIMIT $2
                 """,
-                query,
-                top_k,
+                vec_lit,
+                per_table,
+                *([self._tenant_id] if self._tenant_id else []),
             )
-            return [
-                ProprietaryResult(
+            for r in rows:
+                results.append(ProprietaryResult(
                     content=r["content"],
                     source=r["source"],
                     relevance_score=float(r["score"]),
-                )
-                for r in rows
-            ]
+                ))
+
+            # 2. CCP vectors (document chunks)
+            rows = await conn.fetch(
+                f"""
+                SELECT chunk_text AS content,
+                       COALESCE(source_ref, 'ccp/' || ccp_id) AS source,
+                       1 - (embedding <=> $1::vector) AS score
+                FROM ccp_vectors
+                {"WHERE tenant_id = $3" if self._tenant_id else ""}
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vec_lit,
+                per_table,
+                *([self._tenant_id] if self._tenant_id else []),
+            )
+            for r in rows:
+                results.append(ProprietaryResult(
+                    content=r["content"],
+                    source=r["source"],
+                    relevance_score=float(r["score"]),
+                ))
+
+            # 3. Dashboard vectors
+            rows = await conn.fetch(
+                f"""
+                SELECT update_message AS content,
+                       'dashboard' AS source,
+                       1 - (embedding <=> $1::vector) AS score
+                FROM dashboard_vectors
+                {"WHERE tenant_id = $3" if self._tenant_id else ""}
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vec_lit,
+                per_table,
+                *([self._tenant_id] if self._tenant_id else []),
+            )
+            for r in rows:
+                results.append(ProprietaryResult(
+                    content=r["content"],
+                    source=r["source"],
+                    relevance_score=float(r["score"]),
+                ))
+
+            # 4. Glide KB vectors (knowledge base)
+            rows = await conn.fetch(
+                f"""
+                SELECT v.chunk_text AS content,
+                       COALESCE(i.title, i.table_name || '/' || i.row_id) AS source,
+                       1 - (v.embedding <=> $1::vector) AS score
+                FROM glide_kb_vectors v
+                JOIN glide_kb_items i
+                  ON v.tenant_id = i.tenant_id AND v.item_id = i.item_id
+                {"WHERE v.tenant_id = $3" if self._tenant_id else ""}
+                ORDER BY v.embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vec_lit,
+                per_table,
+                *([self._tenant_id] if self._tenant_id else []),
+            )
+            for r in rows:
+                results.append(ProprietaryResult(
+                    content=r["content"],
+                    source=r["source"],
+                    relevance_score=float(r["score"]),
+                ))
+
+            # Sort all results by score, return top_k
+            results.sort(key=lambda r: r.relevance_score, reverse=True)
+            return results[:top_k]
+
+        except Exception:
+            logger.exception("pgvector search failed")
+            return []
         finally:
             await conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Option C — Elasticsearch (document store)
-# ---------------------------------------------------------------------------
-class ElasticsearchBackend:
-    def __init__(self, url: str, index: str = "documents"):
-        self._url = url
-        self._index = index
-
-    async def search(self, query: str, top_k: int = 5) -> list[ProprietaryResult]:
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self._url}/{self._index}/_search",
-                json={
-                    "size": top_k,
-                    "query": {"multi_match": {"query": query, "fields": ["content", "title", "tags"]}},
-                },
-            )
-            resp.raise_for_status()
-            hits = resp.json()["hits"]["hits"]
-            return [
-                ProprietaryResult(
-                    content=h["_source"].get("content", ""),
-                    source=h["_source"].get("source", h["_id"]),
-                    relevance_score=h["_score"],
-                )
-                for h in hits
-            ]
 
 
 # ---------------------------------------------------------------------------

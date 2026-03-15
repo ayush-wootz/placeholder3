@@ -12,8 +12,9 @@ from src.config import Config
 from src.whatsapp import WhatsAppClient, parse_incoming_message
 from src.tools.search_proprietary import (
     InMemoryBackend,
-    PineconeBackend,
+    ZaiPgvectorBackend,
     openai_embed,
+    gemini_embed,
 )
 from src.tools.search_web import WebSearchTool
 
@@ -21,19 +22,37 @@ logger = logging.getLogger(__name__)
 
 config = Config()
 
-# -- Wire up the bot -------------------------------------------------------
-# Auto-select backend based on which env vars are set
-if config.pinecone_api_key and config.pinecone_index:
-    embed_fn = lambda text: openai_embed(text, api_key=config.openai_api_key)
-    proprietary_db = PineconeBackend(
-        api_key=config.pinecone_api_key,
-        index_name=config.pinecone_index,
-        embed_fn=embed_fn,
+
+# -- Build the embedding function -------------------------------------------
+def _make_embed_fn(cfg: Config):
+    """Return an async embed function matching the ZAI embedding provider."""
+    if cfg.embedding_provider == "gemini":
+        return lambda text: gemini_embed(
+            text,
+            api_key=cfg.embedding_api_key,
+            model=cfg.embedding_model or "gemini-embedding-001",
+            dims=cfg.embedding_dims,
+        )
+    # Default: openai_compat
+    return lambda text: openai_embed(
+        text,
+        api_key=cfg.embedding_api_key or cfg.openai_api_key,
+        model=cfg.embedding_model or "text-embedding-3-small",
     )
-    logger.info("Using Pinecone backend: index=%s", config.pinecone_index)
+
+
+# -- Wire up the bot -------------------------------------------------------
+if config.postgres_url:
+    embed_fn = _make_embed_fn(config)
+    proprietary_db = ZaiPgvectorBackend(
+        connection_url=config.postgres_url,
+        embed_fn=embed_fn,
+        tenant_id=config.tenant_id,
+    )
+    logger.info("Using ZAI pgvector backend (tenant=%s)", config.tenant_id or "all")
 else:
     proprietary_db = InMemoryBackend()
-    logger.info("Using InMemory backend (no PINECONE env vars set)")
+    logger.info("Using InMemory backend (no POSTGRES_URL set)")
 
 web_search = None
 if config.serper_api_key:
