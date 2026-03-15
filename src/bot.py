@@ -2,10 +2,10 @@
 Core Bot — routes questions between proprietary and web sources,
 then synthesizes a natural answer via LLM.
 
-Data priority matrix:
-  Internal question           → 100% proprietary
-  General question + internal → Synthesize both
-  General question            → 100% web
+Intent routing:
+  Greeting (hi, hello, etc.) → Friendly reply, no search
+  Internal question          → 100% proprietary DB
+  General question           → 100% web search
 """
 
 from __future__ import annotations
@@ -28,14 +28,25 @@ from src.utils.formatter import (
 
 logger = logging.getLogger(__name__)
 
+# Greetings the bot should recognise (lowercase)
+_GREETING_WORDS = {
+    "hi", "hello", "hey", "hola", "yo", "sup", "hii", "hiii",
+    "good morning", "good afternoon", "good evening", "good night",
+    "gm", "morning", "evening",
+    "namaste", "namaskar", "namaskaaram",
+    "hello zai", "hi zai", "hey zai",
+    "jai shree ram", "jai shri ram",
+    "kya haal", "kaise ho", "kya chal raha",
+}
 
 SYSTEM_PROMPT_TEMPLATE = """\
-You are {bot_name}. A research-first agent that pulls from proprietary data first, web second.
+You are ZAI — a smart research assistant that answers from proprietary data and web sources.
 
 Rules:
 - Lead with the answer. First sentence = the insight.
 - Use numbers, not adjectives. Use names, not descriptions.
-- Match the user's energy.
+- Mirror the user's tone and energy — formal if they're formal, casual if they're casual.
+- Respond in the SAME LANGUAGE the user writes in. If they write in Hindi or Hinglish, reply in Hindi/Hinglish. If English, reply in English.
 - Never use these words: {banned_words}
 - Never start with: {banned_openings}
 - Never end with: {banned_closings}
@@ -70,11 +81,16 @@ class Bot:
     # ------------------------------------------------------------------
 
     async def answer(self, user_query: str, chat_id: str = "default") -> str:
-        """Main entry-point: classify → route → LLM synthesize → format → remember."""
+        """Main entry-point: classify intent → route → synthesize → remember."""
 
-        is_internal = self.classify_as_internal(user_query)
+        intent = self.classify_intent(user_query)
 
-        if is_internal:
+        if intent == "greeting":
+            response = self._greeting_response()
+            self.memory.add_turn(chat_id, user_query, response, [])
+            return response
+
+        if intent == "internal":
             data_block, prop_results, web_results = await self._handle_internal(user_query)
         else:
             data_block, prop_results, web_results = await self._handle_general(user_query)
@@ -102,10 +118,24 @@ class Bot:
     # Routing
     # ------------------------------------------------------------------
 
-    def classify_as_internal(self, query: str) -> bool:
-        """Return True if the query is about internal/project data."""
-        query_lower = query.lower()
-        return any(kw in query_lower for kw in self.config.internal_keywords)
+    def classify_intent(self, query: str) -> str:
+        """Classify user message as 'greeting', 'internal', or 'general'."""
+        cleaned = query.strip().lower().rstrip("!?.,'\"")
+
+        # Short messages that match known greetings
+        if len(cleaned.split()) <= 5 and cleaned in _GREETING_WORDS:
+            return "greeting"
+
+        # Keyword-triggered internal/project queries
+        if any(kw in cleaned for kw in self.config.internal_keywords):
+            return "internal"
+
+        return "general"
+
+    @staticmethod
+    def _greeting_response() -> str:
+        """Return a simple greeting — no DB search, no LLM."""
+        return "Hey! I'm ZAI. How can I help you today?"
 
     async def _handle_internal(self, query: str) -> tuple[str, list[ProprietaryResult], list[WebResult]]:
         """Workflow 1: internal question → proprietary first, web fallback."""
@@ -121,14 +151,8 @@ class Bot:
         return block, [], web_results
 
     async def _handle_general(self, query: str) -> tuple[str, list[ProprietaryResult], list[WebResult]]:
-        """Workflow 2/3: general question → web + optional proprietary synthesis."""
+        """General question → web search only (no proprietary DB)."""
         web_results = await self._web_search(query)
-        prop_results = await self.proprietary.search(query, top_k=3)
-
-        if prop_results and self._is_relevant(prop_results):
-            block = self._build_data_block(web=web_results, proprietary=prop_results)
-            return block, prop_results, web_results
-
         block = self._build_data_block(web=web_results)
         return block, [], web_results
 
@@ -139,7 +163,7 @@ class Bot:
     async def _llm_synthesize(self, query: str, data_block: str, context: str) -> str:
         """Call OpenAI to synthesize a natural answer from retrieved data."""
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            bot_name=self.config.bot_name,
+            bot_name="ZAI",
             banned_words=", ".join(self.config.banned_words),
             banned_openings=", ".join(self.config.banned_openings),
             banned_closings=", ".join(self.config.banned_closings),
